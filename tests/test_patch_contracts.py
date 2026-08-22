@@ -510,6 +510,24 @@ struct _FridaLibcApi
     return root, paths, stalkers
 
 
+def test_temp_fix_skips_perfetto_thread_without_invalid_goto(tmp_path: Path) -> None:
+    root = make_core_fixture(tmp_path)
+    source = root / "subprojects/frida-gum/gum/backend-linux/gumprocess-linux.c"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(
+        """    if (gum_fill_thread_details (entry, flags))
+      carry_on = func (entry, user_data);
+""",
+        encoding="utf-8",
+    )
+
+    build.apply_stability_fixes(root, 17)
+
+    patched = source.read_text(encoding="utf-8")
+    assert 'strcmp (entry->name, "perfetto_hprof_") != 0' in patched
+    assert "goto skip" not in patched
+
+
 def test_strict_wx_patch_limits_non_rwx_mode_to_persistent_android_code_pools(
     tmp_path: Path,
 ) -> None:
