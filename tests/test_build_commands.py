@@ -86,6 +86,21 @@ def test_validate_gadget_socket_rejects_unsafe_name(value: str) -> None:
         build.validate_gadget_socket(value)
 
 
+def test_validate_gadget_script_accepts_relative_asset_path() -> None:
+    assert (
+        build.validate_gadget_script("../agent/auto-farmer.js")
+        == "../agent/auto-farmer.js"
+    )
+
+
+@pytest.mark.parametrize(
+    "value", ["", "/absolute/agent.js", "agent script.js", "agent\\script.js", "./agent.js"]
+)
+def test_validate_gadget_script_rejects_unsafe_path(value: str) -> None:
+    with pytest.raises(build.BuildError, match="Gadget script"):
+        build.validate_gadget_script(value)
+
+
 def test_embedded_gadget_config_avoids_external_file_read(tmp_path: Path) -> None:
     target = tmp_path / "subprojects/frida-core/lib/gadget/gadget.vala"
     target.parent.mkdir(parents=True)
@@ -95,9 +110,30 @@ def test_embedded_gadget_config_avoids_external_file_read(tmp_path: Path) -> Non
         encoding="utf-8",
     )
 
-    build.apply_embedded_gadget_config_patch(tmp_path, "pgexplorations-gadget-22220")
+    build.apply_embedded_gadget_config_patch(
+        tmp_path, socket_name="pgexplorations-gadget-22220"
+    )
 
     result = target.read_text(encoding="utf-8")
     assert 'address\\\":\\\"unix:pgexplorations-gadget-22220' in result
     assert 'on_load\\\":\\\"resume' in result
     assert result.index("return parse_config") < result.index("gadget_path")
+
+
+def test_embedded_gadget_script_uses_relative_asset_path(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/lib/gadget/gadget.vala"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\tprivate Config load_config (Location location) throws Error {\n"
+        "\t\tunowned string? gadget_path = location.path;\n",
+        encoding="utf-8",
+    )
+
+    build.apply_embedded_gadget_config_patch(
+        tmp_path, script_path="../agent/auto-farmer.js"
+    )
+
+    result = target.read_text(encoding="utf-8")
+    assert 'type\\\":\\\"script' in result
+    assert 'path\\\":\\\"../agent/auto-farmer.js' in result
+    assert 'on_change\\\":\\\"ignore' in result

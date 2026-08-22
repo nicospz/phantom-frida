@@ -62,6 +62,7 @@ ALL_ARCHS = ["android-arm64", "android-arm", "android-x86_64", "android-x86"]
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]{2,19}$")
 GADGET_SOCKET_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,90}$")
+GADGET_SCRIPT_PATTERN = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
 ANDROID_FALLBACK_ROOTS = (
     Path("/usr/local/lib/android/sdk"),
     Path("/usr/local/lib/android"),
@@ -177,6 +178,22 @@ def validate_gadget_socket(value: str | None) -> str | None:
     if value is not None and GADGET_SOCKET_PATTERN.fullmatch(value) is None:
         raise BuildError(
             "Gadget socket must be 1-90 ASCII letters, digits, dots, underscores, or hyphens"
+        )
+    return value
+
+
+def validate_gadget_script(value: str | None) -> str | None:
+    """Validate a relative asset path embedded in Android Gadget."""
+    if value is None:
+        return None
+    if (
+        GADGET_SCRIPT_PATTERN.fullmatch(value) is None
+        or value.startswith("/")
+        or any(part in {"", "."} for part in value.split("/"))
+    ):
+        raise BuildError(
+            "Gadget script must be a 1-200 character relative path using "
+            "ASCII letters, digits, dots, underscores, hyphens, or slashes"
         )
     return value
 
@@ -1278,22 +1295,35 @@ def apply_port_patches(frida_dir: Path, port: int | None) -> None:
             log(f"  Port: global sweep found {count} more occurrences", "OK")
 
 
-def apply_embedded_gadget_config_patch(frida_dir: Path, socket_name: str) -> None:
-    """Embed a listen configuration so Android Gadget performs no config-file I/O."""
+def apply_embedded_gadget_config_patch(
+    frida_dir: Path,
+    *,
+    socket_name: str | None = None,
+    script_path: str | None = None,
+) -> None:
+    """Embed one Gadget interaction so Android performs no config-file I/O."""
+    if (socket_name is None) == (script_path is None):
+        raise BuildError("Exactly one embedded Gadget interaction must be selected")
     target = frida_dir / "subprojects/frida-core/lib/gadget/gadget.vala"
     old = (
         "\tprivate Config load_config (Location location) throws Error {\n"
         "\t\tunowned string? gadget_path = location.path;"
     )
-    config = json.dumps(
+    interaction = (
         {
-            "interaction": {
-                "type": "listen",
-                "address": f"unix:{socket_name}",
-                "on_load": "resume",
-            },
-            "teardown": "minimal",
-        },
+            "type": "listen",
+            "address": f"unix:{socket_name}",
+            "on_load": "resume",
+        }
+        if socket_name is not None
+        else {
+            "type": "script",
+            "path": script_path,
+            "on_change": "ignore",
+        }
+    )
+    config = json.dumps(
+        {"interaction": interaction, "teardown": "minimal"},
         separators=(",", ":"),
     )
     vala_config = config.replace("\\", "\\\\").replace('"', '\\"')
@@ -1305,7 +1335,8 @@ def apply_embedded_gadget_config_patch(frida_dir: Path, socket_name: str) -> Non
     count = replace_in_file(target, old, new)
     if count != 1:
         raise BuildError("Embedded Gadget config source contract did not match exactly once")
-    log(f"  Embedded Gadget listener: unix:{socket_name}", "OK")
+    description = f"listener unix:{socket_name}" if socket_name else f"script {script_path}"
+    log(f"  Embedded Gadget {description}", "OK")
 
 
 def apply_extended_patches(frida_dir: Path, custom_name: str, port: int | None):
@@ -1787,6 +1818,7 @@ def create_build_info(
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
     gadget_socket: str | None = None,
+    gadget_script: str | None = None,
 ) -> dict[str, object]:
     """Create release provenance for the builder and upstream source revisions."""
     repository = os.environ.get("GITHUB_REPOSITORY")
@@ -1806,8 +1838,13 @@ def create_build_info(
         "port": port or 27042,
         "strict_wx": strict_wx,
         "strict_wx_scope": strict_wx_scope,
-        "gadget_config": "embedded" if gadget_socket is not None else "external",
+        "gadget_config": (
+            "embedded"
+            if gadget_socket is not None or gadget_script is not None
+            else "external"
+        ),
         "gadget_socket": gadget_socket,
+        "gadget_script": gadget_script,
         "workflow_url": workflow_url,
     }
 
@@ -1824,6 +1861,7 @@ def write_release_assets(
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
     gadget_socket: str | None = None,
+    gadget_script: str | None = None,
 ) -> tuple[Path, Path]:
     """Write deterministic metadata JSON and checksums for release artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1839,6 +1877,7 @@ def write_release_assets(
         strict_wx=strict_wx,
         strict_wx_scope=strict_wx_scope,
         gadget_socket=gadget_socket,
+        gadget_script=gadget_script,
     )
     info_path.write_text(
         json.dumps(info, indent=2, sort_keys=True) + "\n",
@@ -1923,6 +1962,12 @@ Transformations and verification boundaries:
         help="Embed an Android abstract listen socket and resume-on-load Gadget config",
     )
     parser.add_argument(
+        "--embedded-gadget-script",
+        default=None,
+        metavar="RELATIVE_PATH",
+        help="Embed an Android script interaction resolved relative to the Gadget",
+    )
+    parser.add_argument(
         "--work-dir", "-w", default=None, help="Working directory (default: ./build)"
     )
     parser.add_argument(
@@ -1951,6 +1996,11 @@ Transformations and verification boundaries:
     archs = parse_architectures(args.arch)
     port = validate_port(args.port)
     gadget_socket = validate_gadget_socket(args.embedded_gadget_socket)
+    gadget_script = validate_gadget_script(args.embedded_gadget_script)
+    if gadget_socket is not None and gadget_script is not None:
+        parser.error(
+            "--embedded-gadget-socket and --embedded-gadget-script are mutually exclusive"
+        )
     validate_build_prerequisites(skip_build=args.skip_build)
 
     # Directories
@@ -1974,7 +2024,14 @@ Transformations and verification boundaries:
     strict_wx_scope = "full" if args.strict_wx else "agent" if args.strict_wx_agent_only else "none"
     log(f"  Strict W^X: {strict_wx_scope}", "INFO")
     log(
-        f"  Gadget config: {'embedded unix:' + gadget_socket if gadget_socket else 'external'}",
+        "  Gadget config: "
+        + (
+            "embedded unix:" + gadget_socket
+            if gadget_socket
+            else "embedded script:" + gadget_script
+            if gadget_script
+            else "external"
+        ),
         "INFO",
     )
     log(f"  Work dir: {work_dir}", "INFO")
@@ -2003,7 +2060,9 @@ Transformations and verification boundaries:
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
     if gadget_socket is not None:
-        apply_embedded_gadget_config_patch(frida_dir, gadget_socket)
+        apply_embedded_gadget_config_patch(frida_dir, socket_name=gadget_socket)
+    elif gadget_script is not None:
+        apply_embedded_gadget_config_patch(frida_dir, script_path=gadget_script)
     if args.strict_wx:
         apply_strict_wx_patch(frida_dir, custom_name)
     elif args.strict_wx_agent_only:
@@ -2081,6 +2140,7 @@ Transformations and verification boundaries:
             strict_wx=args.strict_wx,
             strict_wx_scope=strict_wx_scope,
             gadget_socket=gadget_socket,
+            gadget_script=gadget_script,
         )
 
     # Done

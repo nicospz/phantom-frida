@@ -26,6 +26,7 @@ def test_release_assets_record_revisions_and_checksums(
         strict_wx=True,
         strict_wx_scope="full",
         gadget_socket="pgexplorations-gadget-22220",
+        gadget_script=None,
     )
 
     info = json.loads(info_path.read_text(encoding="utf-8"))
@@ -38,6 +39,7 @@ def test_release_assets_record_revisions_and_checksums(
     assert info["strict_wx_scope"] == "full"
     assert info["gadget_config"] == "embedded"
     assert info["gadget_socket"] == "pgexplorations-gadget-22220"
+    assert info["gadget_script"] is None
     assert hashlib.sha256(b"artifact").hexdigest() in sums_path.read_text(encoding="utf-8")
 
 
