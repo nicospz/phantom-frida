@@ -25,6 +25,7 @@ def test_release_assets_record_revisions_and_checksums(
         architectures=["android-arm64"],
         strict_wx=True,
         strict_wx_scope="full",
+        gadget_socket="pgexplorations-gadget-22220",
     )
 
     info = json.loads(info_path.read_text(encoding="utf-8"))
@@ -35,6 +36,8 @@ def test_release_assets_record_revisions_and_checksums(
     assert info["port"] == 27142
     assert info["strict_wx"] is True
     assert info["strict_wx_scope"] == "full"
+    assert info["gadget_config"] == "embedded"
+    assert info["gadget_socket"] == "pgexplorations-gadget-22220"
     assert hashlib.sha256(b"artifact").hexdigest() in sums_path.read_text(encoding="utf-8")
 
 

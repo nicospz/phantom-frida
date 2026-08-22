@@ -61,6 +61,7 @@ NDK_ARCHIVE_SHA1 = "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b"
 ALL_ARCHS = ["android-arm64", "android-arm", "android-x86_64", "android-x86"]
 VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 NAME_PATTERN = re.compile(r"^[a-z][a-z0-9]{2,19}$")
+GADGET_SOCKET_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,90}$")
 ANDROID_FALLBACK_ROOTS = (
     Path("/usr/local/lib/android/sdk"),
     Path("/usr/local/lib/android"),
@@ -168,6 +169,15 @@ def validate_port(value: int | None) -> int | None:
     """Validate an optional TCP port."""
     if value is not None and not 1 <= value <= 65535:
         raise BuildError("Port must be between 1 and 65535")
+    return value
+
+
+def validate_gadget_socket(value: str | None) -> str | None:
+    """Validate an Android abstract socket name embedded in Gadget."""
+    if value is not None and GADGET_SOCKET_PATTERN.fullmatch(value) is None:
+        raise BuildError(
+            "Gadget socket must be 1-90 ASCII letters, digits, dots, underscores, or hyphens"
+        )
     return value
 
 
@@ -1268,6 +1278,36 @@ def apply_port_patches(frida_dir: Path, port: int | None) -> None:
             log(f"  Port: global sweep found {count} more occurrences", "OK")
 
 
+def apply_embedded_gadget_config_patch(frida_dir: Path, socket_name: str) -> None:
+    """Embed a listen configuration so Android Gadget performs no config-file I/O."""
+    target = frida_dir / "subprojects/frida-core/lib/gadget/gadget.vala"
+    old = (
+        "\tprivate Config load_config (Location location) throws Error {\n"
+        "\t\tunowned string? gadget_path = location.path;"
+    )
+    config = json.dumps(
+        {
+            "interaction": {
+                "type": "listen",
+                "address": f"unix:{socket_name}",
+                "on_load": "resume",
+            },
+            "teardown": "minimal",
+        },
+        separators=(",", ":"),
+    )
+    vala_config = config.replace("\\", "\\\\").replace('"', '\\"')
+    new = (
+        "\tprivate Config load_config (Location location) throws Error {\n"
+        f'\t\treturn parse_config ("{vala_config}");\n\n'
+        "\t\tunowned string? gadget_path = location.path;"
+    )
+    count = replace_in_file(target, old, new)
+    if count != 1:
+        raise BuildError("Embedded Gadget config source contract did not match exactly once")
+    log(f"  Embedded Gadget listener: unix:{socket_name}", "OK")
+
+
 def apply_extended_patches(frida_dir: Path, custom_name: str, port: int | None):
     """Apply extended anti-detection patches beyond ajeossida."""
     log("=" * 60, "HEADER")
@@ -1746,6 +1786,7 @@ def create_build_info(
     architectures: list[str],
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
+    gadget_socket: str | None = None,
 ) -> dict[str, object]:
     """Create release provenance for the builder and upstream source revisions."""
     repository = os.environ.get("GITHUB_REPOSITORY")
@@ -1765,6 +1806,8 @@ def create_build_info(
         "port": port or 27042,
         "strict_wx": strict_wx,
         "strict_wx_scope": strict_wx_scope,
+        "gadget_config": "embedded" if gadget_socket is not None else "external",
+        "gadget_socket": gadget_socket,
         "workflow_url": workflow_url,
     }
 
@@ -1780,6 +1823,7 @@ def write_release_assets(
     architectures: list[str],
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
+    gadget_socket: str | None = None,
 ) -> tuple[Path, Path]:
     """Write deterministic metadata JSON and checksums for release artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1794,6 +1838,7 @@ def write_release_assets(
         architectures=architectures,
         strict_wx=strict_wx,
         strict_wx_scope=strict_wx_scope,
+        gadget_socket=gadget_socket,
     )
     info_path.write_text(
         json.dumps(info, indent=2, sort_keys=True) + "\n",
@@ -1872,6 +1917,12 @@ Transformations and verification boundaries:
         help="Experimentally harden Gum and NativeCallback while leaving injection unchanged",
     )
     parser.add_argument(
+        "--embedded-gadget-socket",
+        default=None,
+        metavar="NAME",
+        help="Embed an Android abstract listen socket and resume-on-load Gadget config",
+    )
+    parser.add_argument(
         "--work-dir", "-w", default=None, help="Working directory (default: ./build)"
     )
     parser.add_argument(
@@ -1899,6 +1950,7 @@ Transformations and verification boundaries:
     custom_name = validate_custom_name(args.name)
     archs = parse_architectures(args.arch)
     port = validate_port(args.port)
+    gadget_socket = validate_gadget_socket(args.embedded_gadget_socket)
     validate_build_prerequisites(skip_build=args.skip_build)
 
     # Directories
@@ -1921,6 +1973,10 @@ Transformations and verification boundaries:
     log(f"  Extended: {args.extended}", "INFO")
     strict_wx_scope = "full" if args.strict_wx else "agent" if args.strict_wx_agent_only else "none"
     log(f"  Strict W^X: {strict_wx_scope}", "INFO")
+    log(
+        f"  Gadget config: {'embedded unix:' + gadget_socket if gadget_socket else 'external'}",
+        "INFO",
+    )
     log(f"  Work dir: {work_dir}", "INFO")
     log(f"  Output:   {output_dir}", "INFO")
 
@@ -1946,6 +2002,8 @@ Transformations and verification boundaries:
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
+    if gadget_socket is not None:
+        apply_embedded_gadget_config_patch(frida_dir, gadget_socket)
     if args.strict_wx:
         apply_strict_wx_patch(frida_dir, custom_name)
     elif args.strict_wx_agent_only:
@@ -2022,6 +2080,7 @@ Transformations and verification boundaries:
             architectures=archs,
             strict_wx=args.strict_wx,
             strict_wx_scope=strict_wx_scope,
+            gadget_socket=gadget_socket,
         )
 
     # Done

@@ -101,6 +101,8 @@ def test_verified_release_builds_and_checks_strict_wx_artifacts() -> None:
     assert "strict_wx:" in build
     assert "STRICT_WX: ${{ inputs.strict_wx }}" in build
     assert "command+=(--strict-wx)" in build
+    assert "embedded_gadget_socket:" in build
+    assert 'command+=(--embedded-gadget-socket "$GADGET_SOCKET")' in build
     assert "strict_wx: true" in scheduled
     assert '"strict_wx": True' in scheduled
     assert "- Frida-owned persistent anonymous RWX mappings: hardened" in scheduled

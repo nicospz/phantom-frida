@@ -71,3 +71,33 @@ def test_run_raises_build_error_for_nonzero_exit(
 
     with pytest.raises(build.BuildError, match="exit code 7"):
         build.run(["tool", "arg"])
+
+
+def test_validate_gadget_socket_accepts_abstract_name() -> None:
+    assert (
+        build.validate_gadget_socket("pgexplorations-gadget-22220")
+        == "pgexplorations-gadget-22220"
+    )
+
+
+@pytest.mark.parametrize("value", ["", "unix:name", "name/with/slash", "x" * 91])
+def test_validate_gadget_socket_rejects_unsafe_name(value: str) -> None:
+    with pytest.raises(build.BuildError, match="Gadget socket"):
+        build.validate_gadget_socket(value)
+
+
+def test_embedded_gadget_config_avoids_external_file_read(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/lib/gadget/gadget.vala"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "\tprivate Config load_config (Location location) throws Error {\n"
+        "\t\tunowned string? gadget_path = location.path;\n",
+        encoding="utf-8",
+    )
+
+    build.apply_embedded_gadget_config_patch(tmp_path, "pgexplorations-gadget-22220")
+
+    result = target.read_text(encoding="utf-8")
+    assert 'address\\\":\\\"unix:pgexplorations-gadget-22220' in result
+    assert 'on_load\\\":\\\"resume' in result
+    assert result.index("return parse_config") < result.index("gadget_path")

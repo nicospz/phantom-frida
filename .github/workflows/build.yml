@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: false
+      embedded_gadget_socket:
+        description: Android abstract socket name to embed in Gadget; empty uses external config
+        required: false
+        type: string
+        default: ""
   workflow_dispatch:
     inputs:
       frida_version:
@@ -91,6 +96,11 @@ on:
         required: false
         type: boolean
         default: false
+      embedded_gadget_socket:
+        description: Android abstract socket name to embed in Gadget; empty uses external config
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -110,6 +120,7 @@ jobs:
       CUSTOM_PORT: ${{ inputs.port }}
       EXTENDED_PATCHES: ${{ inputs.extended }}
       FRIDA_VERSION: ${{ inputs.frida_version }}
+      GADGET_SOCKET: ${{ inputs.embedded_gadget_socket }}
       NDK_ARCHIVE_SHA1: 87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b
       NDK_ARCHIVE_URL: https://dl.google.com/android/repository/android-ndk-r29-linux.zip
       STRICT_WX: ${{ inputs.strict_wx }}
@@ -190,6 +201,9 @@ jobs:
           fi
           if [[ "$STRICT_WX_AGENT_ONLY" == "true" ]]; then
             command+=(--strict-wx-agent-only)
+          fi
+          if [[ -n "$GADGET_SOCKET" ]]; then
+            command+=(--embedded-gadget-socket "$GADGET_SOCKET")
           fi
 
           printf 'Running:'
