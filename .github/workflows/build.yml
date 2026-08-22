@@ -1,3 +1,4 @@
+# Fork-local registration marker for manual diagnostic builds.
 name: Build Custom Frida
 
 on:
