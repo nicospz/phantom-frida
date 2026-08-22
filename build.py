@@ -1309,19 +1309,19 @@ def apply_embedded_gadget_config_patch(
         "\tprivate Config load_config (Location location) throws Error {\n"
         "\t\tunowned string? gadget_path = location.path;"
     )
-    interaction = (
-        {
+    if socket_name is not None:
+        interaction = {
             "type": "listen",
             "address": f"unix:{socket_name}",
             "on_load": "resume",
         }
-        if socket_name is not None
-        else {
+    else:
+        assert script_path is not None
+        interaction = {
             "type": "script",
             "path": script_path,
             "on_change": "ignore",
         }
-    )
     config = json.dumps(
         {"interaction": interaction, "teardown": "minimal"},
         separators=(",", ":"),
