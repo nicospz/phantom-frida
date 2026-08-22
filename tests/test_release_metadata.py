@@ -24,6 +24,7 @@ def test_release_assets_record_revisions_and_checksums(
         version="17.16.3",
         architectures=["android-arm64"],
         strict_wx=True,
+        strict_wx_scope="full",
     )
 
     info = json.loads(info_path.read_text(encoding="utf-8"))
@@ -33,6 +34,7 @@ def test_release_assets_record_revisions_and_checksums(
     assert info["ndk_version"] == "r29"
     assert info["port"] == 27142
     assert info["strict_wx"] is True
+    assert info["strict_wx_scope"] == "full"
     assert hashlib.sha256(b"artifact").hexdigest() in sums_path.read_text(encoding="utf-8")
 
 

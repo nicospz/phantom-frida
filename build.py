@@ -770,8 +770,14 @@ def apply_targeted_patches(frida_dir: Path, custom_name: str, frida_major: int):
     log("Targeted patches complete", "OK")
 
 
-def apply_strict_wx_patch(frida_dir: Path, custom_name: str) -> None:
-    """Disable persistent anonymous RWX mappings owned by Frida on Android."""
+def apply_strict_wx_patch(
+    frida_dir: Path, custom_name: str, *, include_injector: bool = True
+) -> None:
+    """Disable persistent anonymous RWX mappings owned by Frida on Android.
+
+    The experimental agent-only scope omits the injector/bootstrap changes so
+    compatibility can be measured independently from Gum and NativeCallback.
+    """
     helper_backend = Path(f"subprojects/frida-core/src/linux/{custom_name}-helper-backend.vala")
     allocator_boxed_types = (
         "G_DEFINE_BOXED_TYPE (GumCodeSlice, gum_code_slice, gum_code_slice_ref,\n"
@@ -779,7 +785,7 @@ def apply_strict_wx_patch(frida_dir: Path, custom_name: str) -> None:
         "G_DEFINE_BOXED_TYPE (GumCodeDeflector, gum_code_deflector,\n"
         "                     gum_code_deflector_ref, gum_code_deflector_unref)\n\n"
     )
-    patches = (
+    agent_patches = (
         (
             Path("subprojects/frida-gum/gum/gumcodeallocator.c"),
             "gum_query_is_rwx_supported ()",
@@ -1060,6 +1066,8 @@ def apply_strict_wx_patch(frida_dir: Path, custom_name: str) -> None:
                 "subprojects/frida-gum/gum/backend-x86/gumstalker-x86.c",
             )
         ),
+    )
+    injector_patches = (
         (
             helper_backend,
             "\t\tprivate static uint64 mmap_offset;\n\t\tprivate static uint64 munmap_offset;",
@@ -1232,6 +1240,7 @@ def apply_strict_wx_patch(frida_dir: Path, custom_name: str) -> None:
             "add remote mprotect call",
         ),
     )
+    patches = agent_patches + injector_patches if include_injector else agent_patches
     for relative_path, old, new, expected_count, description in patches:
         count = replace_in_file(frida_dir / relative_path, old, new)
         if count != expected_count:
@@ -1736,6 +1745,7 @@ def create_build_info(
     version: str,
     architectures: list[str],
     strict_wx: bool = False,
+    strict_wx_scope: str = "none",
 ) -> dict[str, object]:
     """Create release provenance for the builder and upstream source revisions."""
     repository = os.environ.get("GITHUB_REPOSITORY")
@@ -1754,6 +1764,7 @@ def create_build_info(
         "ndk_version": NDK_VERSION,
         "port": port or 27042,
         "strict_wx": strict_wx,
+        "strict_wx_scope": strict_wx_scope,
         "workflow_url": workflow_url,
     }
 
@@ -1768,6 +1779,7 @@ def write_release_assets(
     version: str,
     architectures: list[str],
     strict_wx: bool = False,
+    strict_wx_scope: str = "none",
 ) -> tuple[Path, Path]:
     """Write deterministic metadata JSON and checksums for release artifacts."""
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -1781,6 +1793,7 @@ def write_release_assets(
         version=version,
         architectures=architectures,
         strict_wx=strict_wx,
+        strict_wx_scope=strict_wx_scope,
     )
     info_path.write_text(
         json.dumps(info, indent=2, sort_keys=True) + "\n",
@@ -1854,6 +1867,11 @@ Transformations and verification boundaries:
         help="Harden Frida-owned persistent anonymous RWX mappings on Android",
     )
     parser.add_argument(
+        "--strict-wx-agent-only",
+        action="store_true",
+        help="Experimentally harden Gum and NativeCallback while leaving injection unchanged",
+    )
+    parser.add_argument(
         "--work-dir", "-w", default=None, help="Working directory (default: ./build)"
     )
     parser.add_argument(
@@ -1871,6 +1889,9 @@ Transformations and verification boundaries:
     )
 
     args = parser.parse_args()
+
+    if args.strict_wx and args.strict_wx_agent_only:
+        parser.error("--strict-wx and --strict-wx-agent-only are mutually exclusive")
 
     # Validate
     version = validate_version(args.version)
@@ -1898,7 +1919,8 @@ Transformations and verification boundaries:
     log(f"  Archs:    {', '.join(archs)}", "INFO")
     log(f"  Port:     {port or '27042 (default)'}", "INFO")
     log(f"  Extended: {args.extended}", "INFO")
-    log(f"  Strict W^X: {args.strict_wx}", "INFO")
+    strict_wx_scope = "full" if args.strict_wx else "agent" if args.strict_wx_agent_only else "none"
+    log(f"  Strict W^X: {strict_wx_scope}", "INFO")
     log(f"  Work dir: {work_dir}", "INFO")
     log(f"  Output:   {output_dir}", "INFO")
 
@@ -1926,6 +1948,8 @@ Transformations and verification boundaries:
     apply_targeted_patches(frida_dir, custom_name, frida_major)
     if args.strict_wx:
         apply_strict_wx_patch(frida_dir, custom_name)
+    elif args.strict_wx_agent_only:
+        apply_strict_wx_patch(frida_dir, custom_name, include_injector=False)
 
     # Step 3.5: Extended patches
     if args.extended:
@@ -1997,6 +2021,7 @@ Transformations and verification boundaries:
             version=version,
             architectures=archs,
             strict_wx=args.strict_wx,
+            strict_wx_scope=strict_wx_scope,
         )
 
     # Done

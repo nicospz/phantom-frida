@@ -39,6 +39,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_wx_agent_only:
+        description: Experimentally harden Gum and NativeCallback only
+        required: false
+        type: boolean
+        default: false
   workflow_dispatch:
     inputs:
       frida_version:
@@ -81,6 +86,11 @@ on:
         required: false
         type: boolean
         default: false
+      strict_wx_agent_only:
+        description: Experimentally harden Gum and NativeCallback only
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -103,6 +113,7 @@ jobs:
       NDK_ARCHIVE_SHA1: 87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b
       NDK_ARCHIVE_URL: https://dl.google.com/android/repository/android-ndk-r29-linux.zip
       STRICT_WX: ${{ inputs.strict_wx }}
+      STRICT_WX_AGENT_ONLY: ${{ inputs.strict_wx_agent_only }}
       TEMPORARY_FIXES: ${{ inputs.temp_fixes }}
 
     steps:
@@ -176,6 +187,9 @@ jobs:
           fi
           if [[ "$STRICT_WX" == "true" ]]; then
             command+=(--strict-wx)
+          fi
+          if [[ "$STRICT_WX_AGENT_ONLY" == "true" ]]; then
+            command+=(--strict-wx-agent-only)
           fi
 
           printf 'Running:'

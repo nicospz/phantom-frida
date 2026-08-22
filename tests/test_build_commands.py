@@ -17,6 +17,7 @@ def test_cli_exposes_strict_wx_as_an_explicit_opt_in() -> None:
     )
 
     assert "--strict-wx" in result.stdout
+    assert "--strict-wx-agent-only" in result.stdout
     assert "Frida-owned persistent anonymous RWX" in result.stdout
 
 

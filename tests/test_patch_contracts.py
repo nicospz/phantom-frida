@@ -601,6 +601,17 @@ def test_strict_wx_patch_separates_android_native_callback_code_and_data(
     assert "_gum_android_ffi_closure_free_executable" in v8_core
 
 
+def test_strict_wx_agent_only_patch_leaves_injector_unchanged(tmp_path: Path) -> None:
+    root, paths, _ = make_strict_wx_fixture(tmp_path)
+    original_backend = paths["helper_backend"].read_text(encoding="utf-8")
+
+    build.apply_strict_wx_patch(root, "frida", include_injector=False)
+
+    assert paths["helper_backend"].read_text(encoding="utf-8") == original_backend
+    assert "gum_code_allocator_is_rwx_supported" in paths["allocator"].read_text(encoding="utf-8")
+    assert "_gum_android_ffi_closure_make_executable" in paths["gum"].read_text(encoding="utf-8")
+
+
 def test_strict_wx_patch_uses_the_renamed_helper_backend(tmp_path: Path) -> None:
     root, paths, _ = make_strict_wx_fixture(tmp_path)
     renamed_backend = paths["helper_backend"].with_name("oemcodec-helper-backend.vala")
