@@ -1723,6 +1723,18 @@ def collect_artifacts(
     if gadget is None:
         raise BuildError(f"Gadget artifact not found for {arch}")
 
+    injector = find_artifact(
+        "inject",
+        [
+            f"{custom_name}-inject",
+            f"{custom_name}-inject-raw",
+            "frida-inject",
+            "frida-inject-raw",
+        ],
+    )
+    if injector is None:
+        raise BuildError(f"Injector artifact not found for {arch}")
+
     agent = find_artifact(
         "lib/agent",
         [
@@ -1736,8 +1748,10 @@ def collect_artifacts(
 
     log(f"  Server: {server.name}", "OK")
     log(f"  Gadget: {gadget.name}", "OK")
+    log(f"  Injector: {injector.name}", "OK")
     apply_binary_patches(server, custom_name, extended)
     apply_binary_patches(gadget, custom_name, extended)
+    apply_binary_patches(injector, custom_name, extended)
     if agent is not None:
         log(f"  Agent: {agent.name}", "OK")
         apply_binary_patches(agent, custom_name, extended)
@@ -1757,6 +1771,11 @@ def collect_artifacts(
                 f"{custom_name}-gadget-{version}-android-{arch_short}.so",
                 stage_dir,
                 strip=True,
+            ),
+            *save_artifact(
+                injector,
+                f"{custom_name}-inject-{version}-android-{arch_short}",
+                stage_dir,
             ),
         ]
 

@@ -108,7 +108,7 @@ def test_binary_replacement_does_not_cross_protected_region_boundary() -> None:
     assert count == 0
 
 
-def test_collect_artifacts_requires_server_and_gadget(tmp_path: Path) -> None:
+def test_collect_artifacts_requires_server_gadget_and_injector(tmp_path: Path) -> None:
     with pytest.raises(build.BuildError, match="Server artifact"):
         build.collect_artifacts(
             tmp_path,
@@ -136,7 +136,7 @@ def test_collect_artifacts_rejects_missing_gadget(tmp_path: Path) -> None:
         )
 
 
-def test_collect_artifacts_returns_only_verified_staged_outputs(tmp_path: Path) -> None:
+def test_collect_artifacts_rejects_missing_injector(tmp_path: Path) -> None:
     core_build = tmp_path / "build/subprojects/frida-core"
     server_dir = core_build / "server"
     gadget_dir = core_build / "lib/gadget"
@@ -144,6 +144,29 @@ def test_collect_artifacts_returns_only_verified_staged_outputs(tmp_path: Path) 
     gadget_dir.mkdir(parents=True)
     (server_dir / "oemcodec-server").write_bytes(b"clean-server")
     (gadget_dir / "liboemcodec-gadget.so").write_bytes(b"clean-gadget")
+
+    with pytest.raises(build.BuildError, match="Injector artifact"):
+        build.collect_artifacts(
+            tmp_path,
+            "android-arm64",
+            "oemcodec",
+            "17.16.3",
+            tmp_path / "stage",
+            True,
+        )
+
+
+def test_collect_artifacts_returns_only_verified_staged_outputs(tmp_path: Path) -> None:
+    core_build = tmp_path / "build/subprojects/frida-core"
+    server_dir = core_build / "server"
+    gadget_dir = core_build / "lib/gadget"
+    injector_dir = core_build / "inject"
+    server_dir.mkdir(parents=True)
+    gadget_dir.mkdir(parents=True)
+    injector_dir.mkdir(parents=True)
+    (server_dir / "oemcodec-server").write_bytes(b"clean-server")
+    (gadget_dir / "liboemcodec-gadget.so").write_bytes(b"clean-gadget")
+    (injector_dir / "oemcodec-inject").write_bytes(b"clean-injector")
     output_dir = tmp_path / "stage"
 
     outputs = build.collect_artifacts(
@@ -161,6 +184,8 @@ def test_collect_artifacts_returns_only_verified_staged_outputs(tmp_path: Path) 
         "oemcodec-server-17.16.3-android-arm64.gz",
         "oemcodec-gadget-17.16.3-android-arm64.so",
         "oemcodec-gadget-17.16.3-android-arm64.so.gz",
+        "oemcodec-inject-17.16.3-android-arm64",
+        "oemcodec-inject-17.16.3-android-arm64.gz",
     }
     assert not list(output_dir.glob(".staging-*"))
 
@@ -195,12 +220,15 @@ def test_collect_artifacts_strips_only_staged_gadget_before_compression(
     core_build = tmp_path / "build/subprojects/frida-core"
     server_dir = core_build / "server"
     gadget_dir = core_build / "lib/gadget"
+    injector_dir = core_build / "inject"
     server_dir.mkdir(parents=True)
     gadget_dir.mkdir(parents=True)
+    injector_dir.mkdir(parents=True)
     server_source = server_dir / "oemcodec-server"
     gadget_source = gadget_dir / "liboemcodec-gadget.so"
     server_source.write_bytes(b"clean-server")
     gadget_source.write_bytes(b"unstripped-gadget")
+    (injector_dir / "oemcodec-inject").write_bytes(b"clean-injector")
     stripped: list[Path] = []
 
     def fake_strip(binary: Path, _tool: Path) -> None:
@@ -231,10 +259,13 @@ def test_collect_artifacts_does_not_promote_failed_stage(tmp_path: Path) -> None
     core_build = tmp_path / "build/subprojects/frida-core"
     server_dir = core_build / "server"
     gadget_dir = core_build / "lib/gadget"
+    injector_dir = core_build / "inject"
     server_dir.mkdir(parents=True)
     gadget_dir.mkdir(parents=True)
+    injector_dir.mkdir(parents=True)
     (server_dir / "oemcodec-server").write_bytes(b"/frida-zymbiote-invalid")
     (gadget_dir / "liboemcodec-gadget.so").write_bytes(b"clean-gadget")
+    (injector_dir / "oemcodec-inject").write_bytes(b"clean-injector")
     output_dir = tmp_path / "stage"
 
     with pytest.raises(build.BuildError, match="frida-zymbiote"):
