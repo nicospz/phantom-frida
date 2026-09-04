@@ -84,6 +84,8 @@ Useful options:
 --verify         Reject known forbidden markers in final artifacts
 --skip-build     Patch source without compiling
 --skip-clone     Use an existing source tree in the work directory
+--injector-diagnostics
+                 Emit private path-selection and failed-write diagnostics
 --ndk-path       Use an existing Android NDK r29 directory
 ```
 

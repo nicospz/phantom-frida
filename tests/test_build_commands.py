@@ -21,6 +21,18 @@ def test_cli_exposes_strict_wx_as_an_explicit_opt_in() -> None:
     assert "Frida-owned persistent anonymous RWX" in result.stdout
 
 
+def test_cli_exposes_injector_diagnostics_as_an_explicit_opt_in() -> None:
+    result = subprocess.run(
+        [sys.executable, str(Path(build.__file__)), "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert "--injector-diagnostics" in result.stdout
+    assert "failed ptrace writes" in result.stdout
+
+
 def test_run_passes_argument_vector_without_shell(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

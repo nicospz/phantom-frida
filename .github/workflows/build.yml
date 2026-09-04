@@ -44,6 +44,11 @@ on:
         required: false
         type: boolean
         default: false
+      injector_diagnostics:
+        description: Emit private injector path and failed-write diagnostics
+        required: false
+        type: boolean
+        default: false
       embedded_gadget_socket:
         description: Android abstract socket name to embed in Gadget; empty uses external config
         required: false
@@ -101,6 +106,11 @@ on:
         required: false
         type: boolean
         default: false
+      injector_diagnostics:
+        description: Emit private injector path and failed-write diagnostics
+        required: false
+        type: boolean
+        default: false
       embedded_gadget_socket:
         description: Android abstract socket name to embed in Gadget; empty uses external config
         required: false
@@ -136,6 +146,7 @@ jobs:
       NDK_ARCHIVE_URL: https://dl.google.com/android/repository/android-ndk-r29-linux.zip
       STRICT_WX: ${{ inputs.strict_wx }}
       STRICT_WX_AGENT_ONLY: ${{ inputs.strict_wx_agent_only }}
+      INJECTOR_DIAGNOSTICS: ${{ inputs.injector_diagnostics }}
       TEMPORARY_FIXES: ${{ inputs.temp_fixes }}
 
     steps:
@@ -212,6 +223,9 @@ jobs:
           fi
           if [[ "$STRICT_WX_AGENT_ONLY" == "true" ]]; then
             command+=(--strict-wx-agent-only)
+          fi
+          if [[ "$INJECTOR_DIAGNOSTICS" == "true" ]]; then
+            command+=(--injector-diagnostics)
           fi
           if [[ -n "$GADGET_SOCKET" ]]; then
             command+=(--embedded-gadget-socket "$GADGET_SOCKET")

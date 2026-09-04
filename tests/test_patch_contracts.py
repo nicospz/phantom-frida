@@ -227,6 +227,39 @@ def test_targeted_patch_uses_non_counted_art_jit_memfd_name(tmp_path: Path) -> N
     assert '"jit-cache"' not in patched
 
 
+def test_injector_diagnostics_patch_labels_and_records_supported_write_sites(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/oemcodec-helper-backend.vala"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        (FIXTURE_DIR / "injector-diagnostics.vala").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    build.apply_injector_diagnostics_patch(tmp_path, "oemcodec")
+
+    patched = target.read_text(encoding="utf-8")
+    assert "event=bootstrap-selection" in patched
+    assert "event=ptrace-pokedata-failure" in patched
+    assert "ProcMapsSnapshot.from_pid (pid).find_mapping (failed_address)" in patched
+    assert 'write_diagnostic_path = same_libc ? "direct-mmap" : "code-swap"' in patched
+    assert '"loader-code"' in patched
+    assert '"code-swap-install"' in patched
+    assert '"breakpoint-install"' in patched
+    assert '"remote-call-stack-arguments"' in patched
+
+
+def test_injector_diagnostics_patch_rejects_source_drift(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/oemcodec-helper-backend.vala"
+    target.parent.mkdir(parents=True)
+    source = (FIXTURE_DIR / "injector-diagnostics.vala").read_text(encoding="utf-8")
+    target.write_text(source.replace("ptrace (POKEDATA", "ptrace (CHANGED", 1), encoding="utf-8")
+
+    with pytest.raises(build.BuildError, match="ptrace failed-write record"):
+        build.apply_injector_diagnostics_patch(tmp_path, "oemcodec")
+
+
 def make_strict_wx_fixture(
     tmp_path: Path,
 ) -> tuple[Path, dict[str, Path], list[Path]]:

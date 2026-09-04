@@ -797,6 +797,352 @@ def apply_targeted_patches(frida_dir: Path, custom_name: str, frida_major: int):
     log("Targeted patches complete", "OK")
 
 
+def apply_injector_diagnostics_patch(frida_dir: Path, custom_name: str) -> None:
+    """Add bounded private diagnostics to the Linux/Android injector write path."""
+    helper_backend = (
+        frida_dir
+        / "subprojects"
+        / "frida-core"
+        / "src"
+        / "linux"
+        / f"{custom_name}-helper-backend.vala"
+    )
+    if not helper_backend.is_file():
+        raise BuildError(f"Injector diagnostics source is missing: {helper_backend}")
+
+    patches = (
+        (
+            "\t\tprivate AttachState attach_state = ALREADY_ATTACHED;\n"
+            "\t\tprivate uint _tid;\n"
+            "\t\tprotected GPRegs saved_regs;\n\n"
+            "\t\tprivate static bool seize_supported;",
+            "\t\tprivate AttachState attach_state = ALREADY_ATTACHED;\n"
+            "\t\tprivate uint _tid;\n"
+            "\t\tprotected GPRegs saved_regs;\n"
+            "\t\tprotected string write_diagnostic_path = \"unselected\";\n"
+            "\t\tprotected string write_diagnostic_libc = \"unobserved\";\n\n"
+            "\t\tprivate static bool seize_supported;",
+            1,
+            "injector diagnostic state",
+        ),
+        (
+            "\t\tpublic void write_memory (uint64 address, uint8[] data) throws Error {\n"
+            "\t\t\tif (data.length == 0)\n"
+            "\t\t\t\treturn;\n\n"
+            "#if X86 || X86_64\n"
+            "\t\t\tif (process_vm_writev != null) {\n"
+            "\t\t\t\tvar local = Posix.iovector ();\n"
+            "\t\t\t\tlocal.iov_base = data;\n"
+            "\t\t\t\tlocal.iov_len = data.length;\n\n"
+            "\t\t\t\tvar remote = Posix.iovector ();\n"
+            "\t\t\t\tremote.iov_base = (void *) address;\n"
+            "\t\t\t\tremote.iov_len = data.length;\n\n"
+            "\t\t\t\tssize_t res = process_vm_writev (pid, (Posix.iovector[]) &local, "
+            "(Posix.iovector[]) &remote, 0);\n"
+            "\t\t\t\tif (res != -1)\n"
+            "\t\t\t\t\treturn;\n"
+            "\t\t\t\tif (errno == Posix.ENOSYS)\n"
+            "\t\t\t\t\tprocess_vm_writev = null;\n"
+            "\t\t\t\telse if (errno != Posix.EPERM && errno != Posix.EFAULT)\n"
+            "\t\t\t\t\tthrow new Error.NOT_SUPPORTED "
+            "(\"Unable to write to process memory: %s\", strerror (errno));\n"
+            "\t\t\t}\n"
+            "#endif\n\n"
+            "\t\t\tsize_t offset = 0;\n"
+            "\t\t\tsize_t size = data.length;\n"
+            "\t\t\tuint bytes_per_word = (uint) sizeof (size_t);\n"
+            "\t\t\twhile (offset != size) {\n"
+            "\t\t\t\tsize_t word = 0;\n"
+            "\t\t\t\tsize_t chunk_size = size_t.min (size - offset, bytes_per_word);\n"
+            "\t\t\t\tif (chunk_size < bytes_per_word)\n"
+            "\t\t\t\t\tword = (size_t) ptrace (PEEKDATA, tid, (void *) (address + offset));\n"
+            "\t\t\t\tMemory.copy (&word, (uint8 *) data + offset, chunk_size);\n\n"
+            "\t\t\t\tptrace (POKEDATA, tid, (void *) (address + offset), (void *) word);\n\n"
+            "\t\t\t\toffset += chunk_size;\n"
+            "\t\t\t}\n"
+            "\t\t}\n\n"
+            "\t\tpublic void write_memory_string (uint64 address, string str) throws Error {\n"
+            "\t\t\tunowned uint8[] data = str.data;\n"
+            "\t\t\twrite_memory (address, data[:data.length + 1]);\n"
+            "\t\t}",
+            "\t\tpublic void write_memory (uint64 address, uint8[] data, "
+            "string site = \"unspecified\") throws Error {\n"
+            "\t\t\tif (data.length == 0)\n"
+            "\t\t\t\treturn;\n\n"
+            "#if X86 || X86_64\n"
+            "\t\t\tif (process_vm_writev != null) {\n"
+            "\t\t\t\tvar local = Posix.iovector ();\n"
+            "\t\t\t\tlocal.iov_base = data;\n"
+            "\t\t\t\tlocal.iov_len = data.length;\n\n"
+            "\t\t\t\tvar remote = Posix.iovector ();\n"
+            "\t\t\t\tremote.iov_base = (void *) address;\n"
+            "\t\t\t\tremote.iov_len = data.length;\n\n"
+            "\t\t\t\tssize_t res = process_vm_writev (pid, (Posix.iovector[]) &local, "
+            "(Posix.iovector[]) &remote, 0);\n"
+            "\t\t\t\tif (res != -1)\n"
+            "\t\t\t\t\treturn;\n"
+            "\t\t\t\tif (errno == Posix.ENOSYS)\n"
+            "\t\t\t\t\tprocess_vm_writev = null;\n"
+            "\t\t\t\telse if (errno != Posix.EPERM && errno != Posix.EFAULT)\n"
+            "\t\t\t\t\tthrow new Error.NOT_SUPPORTED "
+            "(\"Unable to write to process memory: %s\", strerror (errno));\n"
+            "\t\t\t}\n"
+            "#endif\n\n"
+            "\t\t\tsize_t offset = 0;\n"
+            "\t\t\tsize_t size = data.length;\n"
+            "\t\t\tuint bytes_per_word = (uint) sizeof (size_t);\n"
+            "\t\t\twhile (offset != size) {\n"
+            "\t\t\t\tsize_t word = 0;\n"
+            "\t\t\t\tsize_t chunk_size = size_t.min (size - offset, bytes_per_word);\n"
+            "\t\t\t\tif (chunk_size < bytes_per_word)\n"
+            "\t\t\t\t\tword = (size_t) ptrace (PEEKDATA, tid, (void *) (address + offset));\n"
+            "\t\t\t\tMemory.copy (&word, (uint8 *) data + offset, chunk_size);\n\n"
+            "\t\t\t\terrno = 0;\n"
+            "\t\t\t\t_ptrace (POKEDATA, tid, (void *) (address + offset), (void *) word);\n"
+            "\t\t\t\tint write_errno = errno;\n"
+            "\t\t\t\tif (write_errno != 0) {\n"
+            "\t\t\t\t\tuint64 failed_address = address + offset;\n"
+            "\t\t\t\t\tstring map_description = \"unmapped\";\n"
+            "\t\t\t\t\tvar mapping = ProcMapsSnapshot.from_pid (pid)"
+            ".find_mapping (failed_address);\n"
+            "\t\t\t\t\tif (mapping != null) {\n"
+            "\t\t\t\t\t\tstring permissions = (mapping.readable ? \"r\" : \"-\")\n"
+            "\t\t\t\t\t\t\t+ (mapping.writable ? \"w\" : \"-\")\n"
+            "\t\t\t\t\t\t\t+ (mapping.executable ? \"x\" : \"-\")\n"
+            "\t\t\t\t\t\t\t+ (mapping.shared ? \"s\" : \"p\");\n"
+            "\t\t\t\t\t\tmap_description = (\"0x%\" + uint64.FORMAT_MODIFIER + \"x-0x%\"\n"
+            "\t\t\t\t\t\t\t+ uint64.FORMAT_MODIFIER + \"x %s offset=0x%\"\n"
+            "\t\t\t\t\t\t\t+ uint64.FORMAT_MODIFIER + \"x device=%s inode=%\"\n"
+            "\t\t\t\t\t\t\t+ uint64.FORMAT_MODIFIER + \"u path=%s\").printf (\n"
+            "\t\t\t\t\t\t\tmapping.start, mapping.end, permissions, mapping.file_offset,\n"
+            "\t\t\t\t\t\t\tmapping.device.to_string (), mapping.inode, mapping.path);\n"
+            "\t\t\t\t\t}\n"
+            "\t\t\t\t\tstderr.printf (\"[PGX_INJECTOR_DIAG] event=ptrace-pokedata-failure \"\n"
+            "\t\t\t\t\t\t+ \"site=%s pid=%u tid=%u base=0x%\" + uint64.FORMAT_MODIFIER\n"
+            "\t\t\t\t\t\t+ \"x address=0x%\" + uint64.FORMAT_MODIFIER + \"x total-size=%\"\n"
+            "\t\t\t\t\t\t+ uint64.FORMAT_MODIFIER + \"u offset=%\" + uint64.FORMAT_MODIFIER\n"
+            "\t\t\t\t\t\t+ \"u word-size=%u errno=%d error=%s path=%s libc=%s map={%s}\\n\",\n"
+            "\t\t\t\t\t\tsite, pid, tid, address, failed_address, (uint64) size,\n"
+            "\t\t\t\t\t\t(uint64) offset, bytes_per_word, write_errno, strerror (write_errno),\n"
+            "\t\t\t\t\t\twrite_diagnostic_path, write_diagnostic_libc, map_description);\n"
+            "\t\t\t\t\tthrow_ptrace_error (POKEDATA, tid, write_errno);\n"
+            "\t\t\t\t}\n\n"
+            "\t\t\t\toffset += chunk_size;\n"
+            "\t\t\t}\n"
+            "\t\t}\n\n"
+            "\t\tpublic void write_memory_string (uint64 address, string str, "
+            "string site = \"string\") throws Error {\n"
+            "\t\t\tunowned uint8[] data = str.data;\n"
+            "\t\t\twrite_memory (address, data[:data.length + 1], site);\n"
+            "\t\t}",
+            1,
+            "ptrace failed-write record",
+        ),
+        (
+            "\t\tprivate async BootstrapResult bootstrap (size_t loader_size, "
+            "Cancellable? cancellable) throws Error, IOError {",
+            "\t\tprivate static string describe_libc_mapping "
+            "(ProcMapsSnapshot.Mapping? mapping) {\n"
+            "\t\t\tif (mapping == null)\n"
+            "\t\t\t\treturn \"missing\";\n"
+            "\t\t\treturn (\"device=%s,inode=%\" + uint64.FORMAT_MODIFIER "
+            "+ \"u,path=%s\").printf (\n"
+            "\t\t\t\tmapping.device.to_string (), mapping.inode, mapping.path);\n"
+            "\t\t}\n\n"
+            "\t\tprivate async BootstrapResult bootstrap (size_t loader_size, "
+            "Cancellable? cancellable) throws Error, IOError {",
+            1,
+            "libc identity formatter",
+        ),
+        (
+            "#endif\n"
+            "\t\t\tif (same_libc) {\n"
+            "\t\t\t\tremote_mmap = remote_libc.start + mmap_offset;\n"
+            "\t\t\t\tremote_munmap = remote_libc.start + munmap_offset;\n"
+            "\t\t\t}\n\n"
+            "\t\t\tif (remote_mmap != 0) {",
+            "#endif\n"
+            "\t\t\twrite_diagnostic_path = same_libc ? \"direct-mmap\" : \"code-swap\";\n"
+            "\t\t\twrite_diagnostic_libc = \"local={%s};remote={%s};same=%s\".printf (\n"
+            "\t\t\t\tdescribe_libc_mapping (local_libc), describe_libc_mapping (remote_libc),\n"
+            "\t\t\t\tsame_libc ? \"true\" : \"false\");\n"
+            "\t\t\tstderr.printf (\"[PGX_INJECTOR_DIAG] event=bootstrap-selection "
+            "pid=%u tid=%u \"\n"
+            "\t\t\t\t+ \"path=%s libc=%s\\n\", pid, tid, write_diagnostic_path,\n"
+            "\t\t\t\twrite_diagnostic_libc);\n"
+            "\t\t\tif (same_libc) {\n"
+            "\t\t\t\tremote_mmap = remote_libc.start + mmap_offset;\n"
+            "\t\t\t\tremote_munmap = remote_libc.start + munmap_offset;\n"
+            "\t\t\t}\n\n"
+            "\t\t\tif (remote_mmap != 0) {",
+            1,
+            "bootstrap path and libc selection",
+        ),
+        (
+            "\t\t\t\twrite_memory (loader_base, loader_code);",
+            "\t\t\t\twrite_memory (loader_base, loader_code, \"loader-code\");",
+            1,
+            "loader code write site",
+        ),
+        (
+            "\t\t\t\twrite_memory (loader_base + loader_layout.ctx_offset, (uint8[]) &loader_ctx);",
+            "\t\t\t\twrite_memory (loader_base + loader_layout.ctx_offset, "
+            "(uint8[]) &loader_ctx, \"loader-context\");",
+            1,
+            "loader context write site",
+        ),
+        (
+            "\t\t\t\twrite_memory (loader_base + loader_layout.libc_api_offset, "
+            "(uint8[]) &bootstrap_result.libc);",
+            "\t\t\t\twrite_memory (loader_base + loader_layout.libc_api_offset, "
+            "(uint8[]) &bootstrap_result.libc,\n"
+            "\t\t\t\t\t\"loader-libc-api\");",
+            1,
+            "loader libc API write site",
+        ),
+        (
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.agent_entrypoint_offset, "
+            "spec.entrypoint);",
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.agent_entrypoint_offset, "
+            "spec.entrypoint,\n"
+            "\t\t\t\t\t\"loader-agent-entrypoint\");",
+            1,
+            "loader entrypoint write site",
+        ),
+        (
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.agent_data_offset, "
+            "spec.data);",
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.agent_data_offset, "
+            "spec.data, \"loader-agent-data\");",
+            1,
+            "loader data write site",
+        ),
+        (
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.fallback_address_offset, "
+            "fallback_address);",
+            "\t\t\t\twrite_memory_string (loader_base + loader_layout.fallback_address_offset, "
+            "fallback_address,\n"
+            "\t\t\t\t\t\"loader-fallback-address\");",
+            1,
+            "loader fallback write site",
+        ),
+        (
+            "\t\t\twrite_memory (loader_base + loader_layout.fallback_address_offset, "
+            "fallback_address.data);",
+            "\t\t\twrite_memory (loader_base + loader_layout.fallback_address_offset, "
+            "fallback_address.data,\n"
+            "\t\t\t\t\"loader-fallback-address-relaunch\");",
+            1,
+            "loader relaunch write site",
+        ),
+        (
+            "\t\t\t\tbootstrap_ctx.allocation_size = allocation_size;\n"
+            "\t\t\t\twrite_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx);",
+            "\t\t\t\tbootstrap_ctx.allocation_size = allocation_size;\n"
+            "\t\t\t\twrite_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx,\n"
+            "\t\t\t\t\t\"code-swap-bootstrap-context\");",
+            1,
+            "code-swap bootstrap context write site",
+        ),
+        (
+            "\t\t\t\twrite_memory (allocation_base, bootstrapper_code);",
+            "\t\t\t\twrite_memory (allocation_base, bootstrapper_code, "
+            "\"allocated-bootstrap-code\");",
+            1,
+            "allocated bootstrap code write site",
+        ),
+        (
+            "\t\t\t\t\tbootstrap_ctx.libc = (HelperLibcApi *) libc_api_location;\n"
+            "\t\t\t\t\twrite_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx);",
+            "\t\t\t\t\tbootstrap_ctx.libc = (HelperLibcApi *) libc_api_location;\n"
+            "\t\t\t\t\twrite_memory (bootstrap_ctx_location, (uint8[]) &bootstrap_ctx,\n"
+            "\t\t\t\t\t\t\"allocated-bootstrap-context\");",
+            1,
+            "allocated bootstrap context write site",
+        ),
+        (
+            "\t\t\t\t\twrite_memory (fallback_ld_location, fallback_ld_cstr);",
+            "\t\t\t\t\twrite_memory (fallback_ld_location, fallback_ld_cstr, "
+            "\"bootstrap-fallback-ld\");",
+            1,
+            "bootstrap linker string write site",
+        ),
+        (
+            "\t\t\t\t\twrite_memory (fallback_libc_location, fallback_libc_cstr);",
+            "\t\t\t\t\twrite_memory (fallback_libc_location, fallback_libc_cstr, "
+            "\"bootstrap-fallback-libc\");",
+            1,
+            "bootstrap libc string write site",
+        ),
+        (
+            "\t\t\tsession.write_memory (code_start, code);",
+            "\t\t\tsession.write_memory (code_start, code, \"code-swap-install\");",
+            1,
+            "code-swap install write site",
+        ),
+        (
+            "\t\t\t\tsession.write_memory (code_start, original_code);",
+            "\t\t\t\tsession.write_memory (code_start, original_code, \"code-swap-restore\");",
+            1,
+            "code-swap restore write site",
+        ),
+        (
+            "\t\t\twrite_memory (target_address, breakpoint_data);",
+            "\t\t\twrite_memory (target_address, breakpoint_data, \"breakpoint-install\");",
+            1,
+            "breakpoint install write site",
+        ),
+        (
+            "\t\t\t\twrite_memory (target_address, original_code);",
+            "\t\t\t\twrite_memory (target_address, original_code, \"breakpoint-restore\");",
+            2,
+            "breakpoint restore write sites",
+        ),
+        (
+            "\t\t\twrite_memory (base_address + code.length - entries_size, entries);",
+            "\t\t\twrite_memory (base_address + code.length - entries_size, entries, "
+            "\"mips-helper-got\");",
+            1,
+            "MIPS helper relocation write site",
+        ),
+        (
+            "\t\t\t\tsession.write_memory (regs.esp, raw_slots);",
+            "\t\t\t\tsession.write_memory (regs.esp, raw_slots, \"x86-remote-call-arguments\");",
+            1,
+            "x86 remote-call argument write site",
+        ),
+        (
+            "\t\t\tsession.write_memory (regs.esp, (uint8[]) &return_address);",
+            "\t\t\tsession.write_memory (regs.esp, (uint8[]) &return_address,\n"
+            "\t\t\t\t\"x86-remote-call-return\");",
+            1,
+            "x86 remote-call return write site",
+        ),
+        (
+            "\t\t\tsession.write_memory (regs.rsp, (uint8[]) &return_address);",
+            "\t\t\tsession.write_memory (regs.rsp, (uint8[]) &return_address,\n"
+            "\t\t\t\t\"x64-remote-call-return\");",
+            1,
+            "x64 remote-call return write site",
+        ),
+        (
+            "\t\t\t\tsession.write_memory (regs.sp, raw_slots);",
+            "\t\t\t\tsession.write_memory (regs.sp, raw_slots, \"remote-call-stack-arguments\");",
+            2,
+            "ARM and MIPS remote-call argument write sites",
+        ),
+    )
+
+    for old, new, expected, description in patches:
+        count = replace_in_file(helper_backend, old, new)
+        if count != expected:
+            raise BuildError(
+                f"Injector diagnostics contract '{description}' occurred {count} times in "
+                f"{helper_backend}; expected {expected}"
+            )
+        log(f"  [injector diagnostics] {description}", "OK")
+
+
 def apply_strict_wx_patch(
     frida_dir: Path, custom_name: str, *, include_injector: bool = True
 ) -> None:
@@ -1836,6 +2182,7 @@ def create_build_info(
     architectures: list[str],
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
+    injector_diagnostics: bool = False,
     gadget_socket: str | None = None,
     gadget_script: str | None = None,
 ) -> dict[str, object]:
@@ -1857,6 +2204,7 @@ def create_build_info(
         "port": port or 27042,
         "strict_wx": strict_wx,
         "strict_wx_scope": strict_wx_scope,
+        "injector_diagnostics": injector_diagnostics,
         "gadget_config": (
             "embedded"
             if gadget_socket is not None or gadget_script is not None
@@ -1879,6 +2227,7 @@ def write_release_assets(
     architectures: list[str],
     strict_wx: bool = False,
     strict_wx_scope: str = "none",
+    injector_diagnostics: bool = False,
     gadget_socket: str | None = None,
     gadget_script: str | None = None,
 ) -> tuple[Path, Path]:
@@ -1895,6 +2244,7 @@ def write_release_assets(
         architectures=architectures,
         strict_wx=strict_wx,
         strict_wx_scope=strict_wx_scope,
+        injector_diagnostics=injector_diagnostics,
         gadget_socket=gadget_socket,
         gadget_script=gadget_script,
     )
@@ -1975,6 +2325,13 @@ Transformations and verification boundaries:
         help="Experimentally harden Gum and NativeCallback while leaving injection unchanged",
     )
     parser.add_argument(
+        "--injector-diagnostics",
+        action="store_true",
+        help=(
+            "Emit bounded private diagnostics for injector path selection and failed ptrace writes"
+        ),
+    )
+    parser.add_argument(
         "--embedded-gadget-socket",
         default=None,
         metavar="NAME",
@@ -2042,6 +2399,7 @@ Transformations and verification boundaries:
     log(f"  Extended: {args.extended}", "INFO")
     strict_wx_scope = "full" if args.strict_wx else "agent" if args.strict_wx_agent_only else "none"
     log(f"  Strict W^X: {strict_wx_scope}", "INFO")
+    log(f"  Injector diagnostics: {args.injector_diagnostics}", "INFO")
     log(
         "  Gadget config: "
         + (
@@ -2078,6 +2436,8 @@ Transformations and verification boundaries:
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
+    if args.injector_diagnostics:
+        apply_injector_diagnostics_patch(frida_dir, custom_name)
     if gadget_socket is not None:
         apply_embedded_gadget_config_patch(frida_dir, socket_name=gadget_socket)
     elif gadget_script is not None:
@@ -2158,6 +2518,7 @@ Transformations and verification boundaries:
             architectures=archs,
             strict_wx=args.strict_wx,
             strict_wx_scope=strict_wx_scope,
+            injector_diagnostics=args.injector_diagnostics,
             gadget_socket=gadget_socket,
             gadget_script=gadget_script,
         )

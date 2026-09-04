@@ -25,6 +25,7 @@ def test_release_assets_record_revisions_and_checksums(
         architectures=["android-arm64"],
         strict_wx=True,
         strict_wx_scope="full",
+        injector_diagnostics=True,
         gadget_socket="pgexplorations-gadget-22220",
         gadget_script=None,
     )
@@ -37,6 +38,7 @@ def test_release_assets_record_revisions_and_checksums(
     assert info["port"] == 27142
     assert info["strict_wx"] is True
     assert info["strict_wx_scope"] == "full"
+    assert info["injector_diagnostics"] is True
     assert info["gadget_config"] == "embedded"
     assert info["gadget_socket"] == "pgexplorations-gadget-22220"
     assert info["gadget_script"] is None
@@ -81,3 +83,4 @@ def test_build_info_records_workflow_url(tmp_path: Path, monkeypatch: pytest.Mon
     )
 
     assert info["workflow_url"] == ("https://github.com/TheQmaks/phantom-frida/actions/runs/12345")
+    assert info["injector_diagnostics"] is False
