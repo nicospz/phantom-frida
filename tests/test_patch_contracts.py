@@ -1,5 +1,8 @@
 # ruff: noqa: E501
 
+import shlex
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -756,3 +759,43 @@ def test_code_swap_patch_rejects_source_drift(tmp_path: Path) -> None:
     with pytest.raises(build.BuildError, match="source contract changed"):
         build.apply_injector_code_swap_patch(tmp_path, "oemcodec")
     assert "d.range.size > code.length" in target.read_text(encoding="utf-8")
+
+
+def test_proc_maps_patch_preserves_pattern_and_enables_raw_subjects(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/proc-maps.vala"
+    target.parent.mkdir(parents=True)
+    source = (FIXTURE_DIR / "proc-maps-iter.vala").read_text(encoding="utf-8")
+    target.write_text(source, encoding="utf-8")
+    build.apply_proc_maps_raw_patch(tmp_path)
+    patched = target.read_text(encoding="utf-8")
+    assert "RegexCompileFlags.MULTILINE | RegexCompileFlags.RAW" in patched
+    assert "pattern.match (contents, 0, out info)" in patched
+    assert "uint64.parse (info.fetch (1), 16)" in patched
+    assert "FileUtils.get_contents" in patched
+
+
+def test_proc_maps_patch_rejects_source_drift(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/proc-maps.vala"
+    target.parent.mkdir(parents=True)
+    target.write_text("changed source", encoding="utf-8")
+    with pytest.raises(build.BuildError, match="source contract changed"):
+        build.apply_proc_maps_raw_patch(tmp_path)
+
+
+def test_glib_maps_parser_handles_non_utf8_mapping_names(tmp_path: Path) -> None:
+    if not shutil.which("cc") or not shutil.which("pkg-config"):
+        pytest.skip("Native GLib regression needs cc and pkg-config")
+    flags = subprocess.run(["pkg-config", "--cflags", "--libs", "glib-2.0"], capture_output=True, text=True)
+    if flags.returncode:
+        pytest.skip("Native GLib regression needs GLib development files")
+    binary = tmp_path / "maps-parser-repro"
+    subprocess.run(["cc", "-Wall", "-Wextra", "-Werror", str(FIXTURE_DIR / "maps-regex-repro.c"), *shlex.split(flags.stdout), "-o", str(binary)], check=True)
+    sample = tmp_path / "synthetic-maps"
+    sample.write_bytes(
+        b"64000000-66000000 r-xs 00000000 00:01 1 /memfd:jit-cache\n"
+        b"70000000-71000000 rw-p 00000000 00:00 0 [anon:arbitrary-\xef-name]\n"
+        b"77000000-78000000 r-xp 00000000 07:70 38 /apex/com.android.runtime/lib64/bionic/libc.so\n"
+    )
+    result = subprocess.run([str(binary), str(sample)], capture_output=True, text=True, check=True)
+    assert "raw=0 maps=0 libc=0 regex_error=1" in result.stdout
+    assert "raw=1 maps=3 libc=1 regex_error=0" in result.stdout

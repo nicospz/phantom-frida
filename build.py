@@ -797,6 +797,39 @@ def apply_targeted_patches(frida_dir: Path, custom_name: str, frida_major: int):
     log("Targeted patches complete", "OK")
 
 
+def apply_proc_maps_raw_patch(frida_dir: Path) -> None:
+    """Parse kernel map records as bytes; mapping names need not be valid UTF-8."""
+    target = frida_dir / "subprojects/frida-core/src/linux/proc-maps.vala"
+    if not target.is_file():
+        raise BuildError(f"Proc maps source is missing: {target}")
+    source = target.read_text(encoding="utf-8")
+    start = source.find("\t\t\tif (!/^([0-9a-f]+)")
+    if start == -1:
+        raise BuildError("Proc maps regex source contract changed")
+    end = source.index("\n\t\t}", start)
+    old = source[start:end]
+    expected_end = (
+        "contents, 0, out info)) {\n"
+        "\t\t\t\tassert_not_reached ();\n\t\t\t}"
+    )
+    if not old.endswith(expected_end) or old.count("$/m.match (") != 1:
+        raise BuildError("Proc maps regex source contract changed")
+    # Reuse the exact upstream ASCII pattern, changing only how subjects are read.
+    literal = old.split("if (!", 1)[1].split("/m.match (", 1)[0] + "/"
+    new = (
+        "\t\t\ttry {\n"
+        "\t\t\t\tvar pattern = new Regex (\n"
+        f"\t\t\t\t\t{literal}.get_pattern (),\n"
+        "\t\t\t\t\tRegexCompileFlags.MULTILINE | RegexCompileFlags.RAW);\n"
+        "\t\t\t\tif (!pattern.match (contents, 0, out info))\n"
+        "\t\t\t\t\tassert_not_reached ();\n"
+        "\t\t\t} catch (RegexError e) {\n"
+        "\t\t\t\tassert_not_reached ();\n"
+        "\t\t\t}"
+    )
+    target.write_text(source[:start] + new + source[end:], encoding="utf-8")
+
+
 def apply_injector_code_swap_patch(frida_dir: Path, custom_name: str) -> None:
     """Exclude Android JIT memfds and select a fully contained, suspended code range."""
     target = frida_dir / "subprojects/frida-core/src/linux" / f"{custom_name}-helper-backend.vala"
@@ -2513,6 +2546,7 @@ Transformations and verification boundaries:
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
+    apply_proc_maps_raw_patch(frida_dir)
     apply_injector_code_swap_patch(frida_dir, custom_name)
     if args.injector_diagnostics:
         apply_injector_diagnostics_patch(frida_dir, custom_name)
