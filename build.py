@@ -797,6 +797,83 @@ def apply_targeted_patches(frida_dir: Path, custom_name: str, frida_major: int):
     log("Targeted patches complete", "OK")
 
 
+def apply_injector_code_swap_patch(frida_dir: Path, custom_name: str) -> None:
+    """Exclude Android JIT memfds and select a fully contained, suspended code range."""
+    target = frida_dir / "subprojects/frida-core/src/linux" / f"{custom_name}-helper-backend.vala"
+    if not target.is_file():
+        raise BuildError(f"Injector code-swap source is missing: {target}")
+    source = target.read_text(encoding="utf-8")
+    old = (
+        '\t\tpublic async ProcessCodeSwapScope (SeizeSession session, uint8['
+        '] code, Cancellable? cancellable) throws Error, IOError {\n'
+        '\t\t\tthis.session = session;\n'
+        '\n'
+        '\t\t\tGum.Linux.enumerate_ranges ((Posix.pid_t) session.pid, READ | '
+        'EXECUTE, d => {\n'
+        '\t\t\t\tunowned Gum.FileMapping? file = d.file;\n'
+        '\t\t\t\tif (file != null && file.path.has_prefix ("memfd:"))\n'
+        '\t\t\t\t\treturn true;\n'
+        '\t\t\t\tif (d.range.size >= code.length) {\n'
+        '\t\t\t\t\tcode_start = d.range.base_address + d.range.size - round_siz'
+        'e_to_page_size (code.length);\n'
+        '\t\t\t\t\tcode_end = code_start + code.length;\n'
+        '\t\t\t\t}\n'
+        '\t\t\t\treturn code_start == 0;\n'
+        '\t\t\t});\n'
+        '\t\t\tif (code_start == 0)\n'
+        '\t\t\t\tthrow new Error.NOT_SUPPORTED ("Unable to find suitable code '
+        'pages");\n'
+        '\n'
+        '\t\t\tthread_suspend_scope = new ThreadSuspendScope (session.pid);\n'
+        '\t\t\tthread_suspend_scope.exclude (session.tid);\n'
+        '\t\t\tyield thread_suspend_scope.enable (cancellable);\n'
+        '\n'
+        '\t\t\toriginal_code = session.read_memory (code_start, code.length);'
+        '\n'
+        '\t\t\tsession.write_memory (code_start, code);\n'
+        '\t\t\tstate = ACTIVE;\n'
+        '\t\t}\n'
+    )
+    new = (
+        '\t\tpublic async ProcessCodeSwapScope (SeizeSession session, uint8['
+        '] code, Cancellable? cancellable) throws Error, IOError {\n'
+        '\t\t\tthis.session = session;\n'
+        '\n'
+        '\t\t\t// Select only after other threads are stopped, so they cannot'
+        ' replace the range.\n'
+        '\t\t\tthread_suspend_scope = new ThreadSuspendScope (session.pid);\n'
+        '\t\t\tthread_suspend_scope.exclude (session.tid);\n'
+        '\t\t\tyield thread_suspend_scope.enable (cancellable);\n'
+        '\n'
+        '\t\t\tsize_t required_size = round_size_to_page_size (code.length);\n'
+        '\t\t\tGum.Linux.enumerate_ranges ((Posix.pid_t) session.pid, READ | '
+        'EXECUTE, d => {\n'
+        '\t\t\t\tunowned Gum.FileMapping? file = d.file;\n'
+        '\t\t\t\tif (file != null && (file.path.has_prefix ("memfd:") || file.'
+        'path.has_prefix ("/memfd:")))\n'
+        '\t\t\t\t\treturn true;\n'
+        '\t\t\t\tif (d.range.size >= required_size) {\n'
+        '\t\t\t\t\tcode_start = d.range.base_address + d.range.size - required_'
+        'size;\n'
+        '\t\t\t\t\tcode_end = code_start + code.length;\n'
+        '\t\t\t\t}\n'
+        '\t\t\t\treturn code_start == 0;\n'
+        '\t\t\t});\n'
+        '\t\t\tif (code_start == 0)\n'
+        '\t\t\t\tthrow new Error.NOT_SUPPORTED ("Unable to find suitable code '
+        'pages");\n'
+        '\n'
+        '\t\t\toriginal_code = session.read_memory (code_start, code.length);'
+        '\n'
+        '\t\t\tsession.write_memory (code_start, code);\n'
+        '\t\t\tstate = ACTIVE;\n'
+        '\t\t}\n'
+    )
+    if source.count(old) != 1:
+        raise BuildError("Injector code-swap source contract changed")
+    target.write_text(source.replace(old, new, 1), encoding="utf-8")
+
+
 def apply_injector_diagnostics_patch(frida_dir: Path, custom_name: str) -> None:
     """Add bounded private diagnostics to the Linux/Android injector write path."""
     helper_backend = (
@@ -2436,6 +2513,7 @@ Transformations and verification boundaries:
     # Step 3: Source patches
     apply_source_patches(frida_dir, custom_name)
     apply_targeted_patches(frida_dir, custom_name, frida_major)
+    apply_injector_code_swap_patch(frida_dir, custom_name)
     if args.injector_diagnostics:
         apply_injector_diagnostics_patch(frida_dir, custom_name)
     if gadget_socket is not None:

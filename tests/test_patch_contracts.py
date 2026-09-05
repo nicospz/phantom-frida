@@ -730,3 +730,29 @@ def test_zymbiote_artifacts_fail_when_upstream_binary_drifts(tmp_path: Path) -> 
 
     with pytest.raises(build.BuildError, match="arm/zymbiote.elf"):
         build.patch_zymbiote_artifacts(root, "oemcodec")
+
+
+def test_code_swap_excludes_android_shared_jit_and_selects_while_suspended(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/oemcodec-helper-backend.vala"
+    target.parent.mkdir(parents=True)
+    source = (FIXTURE_DIR / "code-swap.vala").read_text(encoding="utf-8")
+    target.write_text(source, encoding="utf-8")
+    build.apply_injector_code_swap_patch(tmp_path, "oemcodec")
+    patched = target.read_text(encoding="utf-8")
+    assert 'file.path.has_prefix ("memfd:") || file.path.has_prefix ("/memfd:")' in patched
+    assert patched.index("yield thread_suspend_scope.enable") < patched.index("Gum.Linux.enumerate_ranges")
+    assert patched.count("yield thread_suspend_scope.enable") == 1
+    assert "d.range.size >= required_size" in patched
+    assert "d.range.size - required_size" in patched
+    assert patched.count("session.write_memory (code_start, code)") == 1
+    assert "session.read_memory (code_start, code.length)" in patched
+
+
+def test_code_swap_patch_rejects_source_drift(tmp_path: Path) -> None:
+    target = tmp_path / "subprojects/frida-core/src/linux/oemcodec-helper-backend.vala"
+    target.parent.mkdir(parents=True)
+    source = (FIXTURE_DIR / "code-swap.vala").read_text(encoding="utf-8")
+    target.write_text(source.replace("d.range.size >= code.length", "d.range.size > code.length"), encoding="utf-8")
+    with pytest.raises(build.BuildError, match="source contract changed"):
+        build.apply_injector_code_swap_patch(tmp_path, "oemcodec")
+    assert "d.range.size > code.length" in target.read_text(encoding="utf-8")
