@@ -1253,6 +1253,171 @@ def apply_injector_diagnostics_patch(frida_dir: Path, custom_name: str) -> None:
         log(f"  [injector diagnostics] {description}", "OK")
 
 
+def apply_injector_handshake_diagnostics_patch(frida_dir: Path, custom_name: str) -> None:
+    """Opt-in numeric loader checkpoints, with no account/script data or policy changes."""
+    core = frida_dir / "subprojects/frida-core"
+    helper = core / "src/linux" / f"{custom_name}-helper-backend.vala"
+    loader = core / "src/linux/helpers/loader.c"
+    header = core / "src/linux/helpers/inject-context.h"
+
+    def patch(path: Path, old: str, new: str) -> None:
+        if not path.is_file() or path.read_text(encoding="utf-8").count(old) != 1:
+            raise BuildError(f"Injector handshake diagnostics source contract drift: {path.name}")
+        replace_in_file(path, old, new)
+
+    stages = (
+        "CODE_FD_ENTER",
+        "CODE_FD_OK",
+        "CODE_FD_FAILED",
+        "DLOPEN_ENTER",
+        "DLOPEN_OK",
+        "DLSYM_ENTER",
+        "DLSYM_OK",
+        "CONTROL_FD_ENTER",
+        "CONTROL_FD_DONE",
+        "ACK_OK",
+        "ENTRY_ENTER",
+        "ENTRY_RETURN",
+        "CLEANUP",
+    )
+    patch(
+        header,
+        "  FRIDA_MESSAGE_ERROR_DLSYM,\n",
+        "  FRIDA_MESSAGE_ERROR_DLSYM,\n"
+        + "".join(f"  FRIDA_MESSAGE_DIAG_{stage},\n" for stage in stages),
+    )
+    patch(
+        helper,
+        "\t\tERROR_DLSYM\n",
+        "\t\tERROR_DLSYM,\n" + "".join(f"\t\tDIAG_{stage},\n" for stage in stages),
+    )
+    prototype = "static bool frida_send_ready (int sockfd, const FridaLibcApi * libc);"
+    patch(
+        loader,
+        prototype,
+        prototype + "\nstatic void frida_send_diagnostic (int fd, FridaMessageType stage, "
+        "const FridaLibcApi * libc);",
+    )
+    patch(
+        loader,
+        "static bool\nfrida_send_ready (",
+        """/* One-byte, nonblocking, best-effort records: never gate loader progress. */
+static void
+frida_send_diagnostic (int fd, FridaMessageType stage, const FridaLibcApi * libc)
+{
+  libc->send (fd, &stage, sizeof (stage), MSG_NOSIGNAL | MSG_DONTWAIT);
+}
+
+static bool
+frida_send_ready (""",
+    )
+
+    def record(stage: str, indent: str = "    ") -> str:
+        return f"{indent}frida_send_diagnostic (ctrlfd, FRIDA_MESSAGE_DIAG_{stage}, libc);\n"
+
+    receive = "    agent_codefd = frida_receive_fd (ctrlfd, libc);\n"
+    patch(
+        loader,
+        receive,
+        record("CODE_FD_ENTER")
+        + receive
+        + "    frida_send_diagnostic (ctrlfd, (agent_codefd == -1) ?\n"
+        "        FRIDA_MESSAGE_DIAG_CODE_FD_FAILED : FRIDA_MESSAGE_DIAG_CODE_FD_OK, libc);\n",
+    )
+    for old, stage in (
+        (
+            "    ctx->agent_handle = libc->dlopen "
+            "(agent_path, libc->dlopen_flags, pretend_caller_addr);\n",
+            "DLOPEN_ENTER",
+        ),
+        (
+            "    ctx->agent_entrypoint_impl = libc->dlsym "
+            "(ctx->agent_handle, ctx->agent_entrypoint, pretend_caller_addr);\n",
+            "DLSYM_ENTER",
+        ),
+    ):
+        patch(loader, old, record(stage) + old)
+    for old, stage in (
+        ("    if (ctx->agent_handle == NULL)\n      goto dlopen_failed;\n", "DLOPEN_OK"),
+        ("    if (ctx->agent_entrypoint_impl == NULL)\n      goto dlsym_failed;\n", "DLSYM_OK"),
+    ):
+        patch(loader, old, old + record(stage))
+    old = "  agent_ctrlfd = frida_receive_fd (ctrlfd, libc);\n"
+    patch(loader, old, record("CONTROL_FD_ENTER", "  ") + old + record("CONTROL_FD_DONE", "  "))
+    old = "  if (!frida_receive_ack (ctrlfd, libc))\n    goto beach;\n"
+    patch(loader, old, old + record("ACK_OK", "  "))
+    old = "  ctx->agent_entrypoint_impl (ctx->agent_data, &unload_policy, &injector_state);\n"
+    patch(loader, old, record("ENTRY_ENTER", "  ") + old)
+    old = "  agent_ctrlfd = injector_state.agent_ctrlfd;\n"
+    patch(loader, old, old + "  if (ctrlfd != -1)\n" + record("ENTRY_RETURN", "    "))
+    patch(
+        loader,
+        "beach:\n  {\n",
+        "beach:\n  {\n    if (ctrlfd != -1)\n" + record("CLEANUP", "      "),
+    )
+
+    prefix = "[PGX_INJECTOR_DIAG]"
+    old = "\t\t\tError? pending_start_error = null;\n"
+    patch(
+        helper,
+        old,
+        old + "\t\t\tint64 diagnostic_started = GLib.get_monotonic_time ();\n"
+        "\t\t\tuint8 diagnostic_last_type = 255;\n"
+        '\t\t\tstring diagnostic_stage = "read-type";\n',
+    )
+    old = "\t\t\t\t\tvar type = (HelperMessageType) raw_type;\n"
+    patch(
+        helper,
+        old,
+        old
+        + "\t\t\t\t\tdiagnostic_last_type = raw_type;\n"
+        + f'\t\t\t\t\tstderr.printf ("{prefix} event=handshake-message '
+        'pid=%u type=%u elapsedUs=%lld\\n",\n'
+        + "\t\t\t\t\t\tpid, (uint) raw_type, GLib.get_monotonic_time () - diagnostic_started);\n",
+    )
+    for variable, label in (("m", "hello-or-bye"), ("length", "error-length")):
+        # HELLO/BYE share a source expression, so instrument each specific surrounding statement.
+        if variable == "m":
+            for struct in ("Hello", "Bye"):
+                old = f"\t\t\t\t\t\t\tvar m = Helper{struct}Message ();\n"
+                patch(
+                    helper,
+                    old,
+                    old + f'\t\t\t\t\t\t\tdiagnostic_stage = "{struct.lower()}-payload";\n',
+                )
+        else:
+            old = "\t\t\t\t\t\t\tuint16 length = 0;\n"
+            patch(helper, old, old + f'\t\t\t\t\t\t\tdiagnostic_stage = "{label}";\n')
+    old = "\t\t\t\t\tuint8 raw_type = 0;\n"
+    patch(helper, old, '\t\t\t\t\tdiagnostic_stage = "read-type";\n' + old)
+    old = "\t\t\t\t\t\t\tvar data = new uint8[length + 1];\n"
+    patch(helper, old, '\t\t\t\t\t\t\tdiagnostic_stage = "error-body";\n' + old)
+    old = "\t\t\t} catch (GLib.Error e) {\n\t\t\t\tif (!(e is IOError.CANCELLED))\n"
+    patch(
+        helper,
+        old,
+        "\t\t\t} catch (GLib.Error e) {\n"
+        + f'\t\t\t\tstderr.printf ("{prefix} event=handshake-io-error '
+        'pid=%u stage=%s domain=%u code=%d\\n",\n'
+        + "\t\t\t\t\tpid, diagnostic_stage, (uint) e.domain, e.code);\n"
+        + "\t\t\t\tif (!(e is IOError.CANCELLED))\n",
+    )
+    old = (
+        "\t\t\t\tif (start_request != null) {\n"
+        "\t\t\t\t\tError error = (pending_start_error != null)\n"
+    )
+    patch(
+        helper,
+        old,
+        "\t\t\t\tif (start_request != null) {\n"
+        + f'\t\t\t\t\tstderr.printf ("{prefix} event=handshake-incomplete '
+        'pid=%u stage=%s lastType=%u elapsedUs=%lld\\n",\n'
+        + "\t\t\t\t\t\tpid, diagnostic_stage, (uint) diagnostic_last_type, "
+        "GLib.get_monotonic_time () - diagnostic_started);\n"
+        + "\t\t\t\t\tError error = (pending_start_error != null)\n",
+    )
+
+
 def apply_strict_wx_patch(
     frida_dir: Path, custom_name: str, *, include_injector: bool = True
 ) -> None:
@@ -2550,6 +2715,7 @@ Transformations and verification boundaries:
     apply_injector_code_swap_patch(frida_dir, custom_name)
     if args.injector_diagnostics:
         apply_injector_diagnostics_patch(frida_dir, custom_name)
+        apply_injector_handshake_diagnostics_patch(frida_dir, custom_name)
     if gadget_socket is not None:
         apply_embedded_gadget_config_patch(frida_dir, socket_name=gadget_socket)
     elif gadget_script is not None:
