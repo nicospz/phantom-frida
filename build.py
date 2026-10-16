@@ -1392,7 +1392,8 @@ frida_send_ready (""",
     patch(helper, old, '\t\t\t\t\tdiagnostic_stage = "read-type";\n' + old)
     old = "\t\t\t\t\t\t\tvar data = new uint8[length + 1];\n"
     patch(helper, old, '\t\t\t\t\t\t\tdiagnostic_stage = "error-body";\n' + old)
-    old = "\t\t\t} catch (GLib.Error e) {\n\t\t\t\tif (!(e is IOError.CANCELLED))\n"
+    old = ("\t\t\t} catch (GLib.Error e) {\n"
+           "\t\t\t\tif (!(e is IOError.CANCELLED))\n\t\t\t\t\ton_stop (IMMEDIATE);\n")
     patch(
         helper,
         old,
@@ -1400,7 +1401,7 @@ frida_send_ready (""",
         + f'\t\t\t\tstderr.printf ("{prefix} event=handshake-io-error '
         'pid=%u stage=%s domain=%u code=%d\\n",\n'
         + "\t\t\t\t\tpid, diagnostic_stage, (uint) e.domain, e.code);\n"
-        + "\t\t\t\tif (!(e is IOError.CANCELLED))\n",
+        + "\t\t\t\tif (!(e is IOError.CANCELLED))\n\t\t\t\t\ton_stop (IMMEDIATE);\n",
     )
     old = (
         "\t\t\t\tif (start_request != null) {\n"

@@ -16,6 +16,12 @@ def source_tree(root: Path) -> Path:
     for name in ("loader.c", "inject-context.h", "syscall.h"):
         shutil.copyfile(FIXTURES / f"handshake-{name}", helpers / name)
     shutil.copyfile(FIXTURES / "handshake-monitor.vala", linux / "oemcodec-helper-backend.vala")
+    # The full backend also contains an unrelated cancellation handler with this prefix.
+    monitor = linux / "oemcodec-helper-backend.vala"
+    monitor.write_text(monitor.read_text() +
+                       "\n\t\t\t} catch (GLib.Error e) {\n"
+                       "\t\t\t\tif (!(e is IOError.CANCELLED))\n"
+                       "\t\t\t\t\tthrow e;\n")
     return helpers
 
 
