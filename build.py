@@ -1279,6 +1279,9 @@ def apply_injector_handshake_diagnostics_patch(frida_dir: Path, custom_name: str
         "ENTRY_ENTER",
         "ENTRY_RETURN",
         "CLEANUP",
+        "RECV_FD_ERROR",
+        "RECV_FD_EOF",
+        "RECV_FD_NO_CONTROL",
     )
     patch(
         header,
@@ -1354,6 +1357,15 @@ frida_send_ready (""",
         loader,
         "beach:\n  {\n",
         "beach:\n  {\n    if (ctrlfd != -1)\n" + record("CLEANUP", "      "),
+    )
+    patch(
+        loader,
+        "  if (res == -1 || res == 0 || msg.msg_controllen == 0)\n    return -1;",
+        "  if (res == -1 || res == 0 || msg.msg_controllen == 0)\n  {\n"
+        "    frida_send_diagnostic (sockfd, (res == -1) ? FRIDA_MESSAGE_DIAG_RECV_FD_ERROR :\n"
+        "        ((res == 0) ? FRIDA_MESSAGE_DIAG_RECV_FD_EOF :\n"
+        "        FRIDA_MESSAGE_DIAG_RECV_FD_NO_CONTROL), libc);\n"
+        "    return -1;\n  }",
     )
 
     prefix = "[PGX_INJECTOR_DIAG]"
@@ -2215,6 +2227,44 @@ def configure_arch(frida_dir: Path, arch: str, ndk_path: Path):
     )
 
 
+def rebuild_diagnostic_loader(frida_dir: Path, arch: str, ndk_path: Path) -> bytes:
+    """Rebuild the tracked blob consumed by core, not just its unused C source."""
+    if arch != "android-arm64":
+        raise BuildError("Rebuilt diagnostic loader currently requires android-arm64")
+    helpers = frida_dir / "subprojects/frida-core/src/linux/helpers"
+    if "FRIDA_MESSAGE_DIAG_CODE_FD_ENTER" not in (helpers / "loader.c").read_text():
+        raise BuildError("Diagnostic loader source is not patched")
+    llvm = find_llvm_strip(ndk_path).parent
+    target = helpers / "artifacts/native/arm64/loader.bin"
+    previous = target.read_bytes()
+    with TemporaryDirectory(prefix="loader-rebuild-") as temporary:
+        elf = Path(temporary) / "loader.so"
+        blob = Path(temporary) / "loader.bin"
+        # Match helpers/meson.build's freestanding payload layout. No bootstrapper
+        # or zymbiote rebuild: those are separate artifacts and remain unchanged.
+        run([llvm / "aarch64-linux-android21-clang", "-shared", "-fPIC", "-Os",
+             "-std=gnu99", "-fvisibility=hidden", "-fno-function-sections",
+             "-fno-data-sections", "-fno-asynchronous-unwind-tables",
+             "-fno-stack-protector", "-nostdlib", "-Wl,--no-undefined",
+             f"-Wl,-T,{helpers / 'helper.lds'}", helpers / "loader.c",
+             helpers / "syscall.c", "-o", elf])
+        report = subprocess.run([llvm / "llvm-readelf", "-r", elf], check=True,
+                                capture_output=True, text=True).stdout
+        if "There are no relocations" not in report:
+            raise BuildError("Diagnostic loader has runtime relocations")
+        run([llvm / "llvm-objcopy", "-O", "binary", "-j", ".payload", elf, blob])
+        data = blob.read_bytes()
+    if not data or data == previous:
+        raise BuildError("Diagnostic loader blob was not rebuilt")
+    target.write_bytes(data)
+    return data
+
+
+def verify_embedded_loader(injector: Path, loader: bytes) -> None:
+    if not loader or injector.read_bytes().count(loader) != 1:
+        raise BuildError("Rebuilt diagnostic loader is missing from final injector")
+
+
 def build_frida(frida_dir: Path, ndk_path: Path):
     cpus = os.cpu_count() or 4
     log(f"Building ({cpus} threads)...", "STEP")
@@ -2757,6 +2807,11 @@ Transformations and verification boundaries:
             # Configure
             configure_arch(frida_dir, arch, ndk_path)
 
+            diagnostic_loader = (
+                rebuild_diagnostic_loader(frida_dir, arch, ndk_path)
+                if args.injector_diagnostics else None
+            )
+
             # First build
             log("First build...", "STEP")
             build_frida(frida_dir, ndk_path)
@@ -2778,6 +2833,12 @@ Transformations and verification boundaries:
                 args.extended,
                 strip_tool=strip_tool,
             )
+            if diagnostic_loader is not None:
+                verify_embedded_loader(
+                    staged_output / f"{custom_name}-inject-{version}-{arch}",
+                    diagnostic_loader,
+                )
+                (staged_output / f"diagnostic-loader-{arch}.bin").write_bytes(diagnostic_loader)
 
         # Step 6: Verification
         if args.verify:

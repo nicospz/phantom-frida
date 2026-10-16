@@ -46,7 +46,7 @@ def test_native_loader_checkpoints_preserve_success_failure_and_dropped_diagnost
     subprocess.run(
         ["cc", "-std=gnu11", "-Wall", "-Werror", str(harness), "-o", str(binary)], check=True
     )
-    for scenario in range(5):
+    for scenario in range(7):
         subprocess.run([str(binary), str(scenario)], check=True, timeout=5)
     monitor = (helpers.parent / "oemcodec-helper-backend.vala").read_text()
     assert "event=handshake-incomplete" in monitor
@@ -67,4 +67,15 @@ def test_diagnostic_wire_values_match_without_changing_existing_messages(tmp_pat
     vala_names = re.findall(r"\b([A-Z][A-Z_]+)\b", vala_values)
     assert c_names == vala_names
     assert c_names[:6] == ["HELLO", "READY", "ACK", "BYE", "ERROR_DLOPEN", "ERROR_DLSYM"]
-    assert len(c_names) == 19
+    assert len(c_names) == 22
+
+
+def test_embedded_loader_gate_rejects_stale_or_missing_blob(tmp_path: Path) -> None:
+    injector = tmp_path / "injector"
+    injector.write_bytes(b"ELF header" + b"old loader" + b"monitor checkpoints")
+    with pytest.raises(build.BuildError, match="missing from final injector"):
+        build.verify_embedded_loader(injector, b"rebuilt loader")
+    injector.write_bytes(b"ELF header" + b"rebuilt loader" + b"monitor checkpoints")
+    build.verify_embedded_loader(injector, b"rebuilt loader")
+    with pytest.raises(build.BuildError, match="missing from final injector"):
+        build.verify_embedded_loader(injector, b"")

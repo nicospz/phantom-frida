@@ -21,6 +21,8 @@ static ssize_t fake_send (int fd, const void * data, size_t len, int flags) {
 static ssize_t fake_recv (int fd, struct msghdr * msg, int flags) {
   receives++;
   if (receives == 1 && scenario == 1) return -1;
+  if (receives == 1 && scenario == 5) return 0;
+  if (receives == 1 && scenario == 6) { msg->msg_controllen = 0; return 1; }
   if (msg->msg_control != NULL) {
     struct cmsghdr * c = msg->msg_control;
     c->cmsg_len = CMSG_LEN (sizeof (int));
@@ -54,6 +56,9 @@ int main (int argc, char ** argv) {
   if (scenario != 4) assert (seen[FRIDA_MESSAGE_DIAG_CLEANUP] == 1);
   if (scenario == 0) assert (seen[FRIDA_MESSAGE_DIAG_ENTRY_RETURN] == 1);
   if (scenario == 1) assert (seen[FRIDA_MESSAGE_DIAG_CODE_FD_FAILED] == 1);
+  if (scenario == 1) assert (seen[FRIDA_MESSAGE_DIAG_RECV_FD_ERROR] == 1);
+  if (scenario == 5) assert (seen[FRIDA_MESSAGE_DIAG_RECV_FD_EOF] == 1);
+  if (scenario == 6) assert (seen[FRIDA_MESSAGE_DIAG_RECV_FD_NO_CONTROL] == 1);
   if (scenario == 2) assert (seen[FRIDA_MESSAGE_ERROR_DLOPEN] == 1);
   if (scenario == 3) assert (seen[FRIDA_MESSAGE_ERROR_DLSYM] == 1);
   return 0;

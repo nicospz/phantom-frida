@@ -31,6 +31,9 @@ The existing loader error handling remains intact.
 | 16 | Enter agent entrypoint |
 | 17 | Agent entrypoint returned |
 | 18 | Enter cleanup |
+| 19 | Descriptor recvmsg returned -1 |
+| 20 | Descriptor recvmsg returned EOF |
+| 21 | Descriptor recvmsg returned without control data |
 | 255 | No message type received yet |
 
 New loader messages are single-byte, nonblocking, best-effort sends. They contain
@@ -44,3 +47,11 @@ Tests compile and execute the actual patched loader against mocked libc calls:
 success, failed descriptor receipt, dlopen failure, dlsym failure and dropped
 diagnostic sends. Cleanup and entrypoint outcomes must remain unchanged. Tests
 also reject source drift and check that C and Vala message numbers agree.
+
+Diagnostic builds rebuild the arm64 loader payload using the NDK before building
+core: core otherwise embeds a tracked, precompiled `loader.bin` and ignores changes
+to `loader.c`. The build rejects unresolved symbols and runtime relocations, then
+requires the rebuilt payload to occur exactly once in the final patched injector.
+The exact payload is included as `diagnostic-loader-android-arm64.bin` in the hashed
+artifacts for downstream packaging verification. Other architectures fail explicitly
+in this opt-in mode until their loader rebuild is implemented.
